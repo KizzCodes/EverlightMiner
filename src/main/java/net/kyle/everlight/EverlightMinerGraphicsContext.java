@@ -39,9 +39,14 @@ public class EverlightMinerGraphicsContext extends ScriptGraphicsContext {
                 if (ImGui.BeginTabItem("Play", ImGuiWindowFlag.None.getValue())) {
                     ImGui.Text("Mine porcelain clay at the Everlight Digsite.");
                     ImGui.Text("State: " + script.getBotState());
+                    if (!script.stopReason.isEmpty())
+                        ImGui.Text("Stopped: " + script.stopReason.replace("%", "%%"));
                     if (ImGui.Button("Start")) script.setBotState(EverlightMinerScript.BotState.MINING);
                     ImGui.SameLine();
                     if (ImGui.Button("Stop")) script.setBotState(EverlightMinerScript.BotState.IDLE);
+                    ImGui.SeparatorText("Stop conditions (0 = off)");
+                    script.stopAtLevel = ImGui.InputInt("Stop at Mining level", script.stopAtLevel);
+                    script.stopAfterMinutes = ImGui.InputInt("Stop after minutes", script.stopAfterMinutes);
                     ImGui.EndTabItem();
                 }
 
@@ -54,6 +59,10 @@ public class EverlightMinerGraphicsContext extends ScriptGraphicsContext {
                     double hours = elapsedMs / (1000.0 * 60 * 60);
                     long perHour = hours > 0 ? Math.round(gained / hours) : 0;
                     ImGui.Text("XP/hour: " + perHour);
+                    int xpToNext = safeXpToNext();
+                    ImGui.Text("XP to next level: " + xpToNext);
+                    ImGui.Text("Time to level: " + (perHour > 0 && xpToNext > 0
+                            ? fmtDuration((long) (xpToNext / (double) perHour * 3600)) : "—"));
                     ImGui.Separator();
                     ImGui.Text("Porcelain mined: " + script.oreMined);
                     long orePerHour = hours > 0 ? Math.round(script.oreMined / hours) : 0;
@@ -112,6 +121,15 @@ public class EverlightMinerGraphicsContext extends ScriptGraphicsContext {
 
     private int safeXp() {
         try { return Skills.MINING.getSkill().getExperience(); } catch (Throwable t) { return startingXp; }
+    }
+
+    private int safeXpToNext() {
+        try { return Skills.MINING.getSkill().getExperienceToNextLevel(); } catch (Throwable t) { return 0; }
+    }
+
+    private static String fmtDuration(long secs) {
+        if (secs < 0) secs = 0;
+        return String.format("%02d:%02d:%02d", secs / 3600, (secs % 3600) / 60, secs % 60);
     }
 
     @Override

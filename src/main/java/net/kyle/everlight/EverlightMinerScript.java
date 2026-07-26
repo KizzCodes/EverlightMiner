@@ -9,6 +9,7 @@ import net.botwithus.rs3.game.minimenu.MiniMenu;
 import net.botwithus.rs3.game.queries.builders.objects.SceneObjectQuery;
 import net.botwithus.rs3.game.scene.entities.characters.player.LocalPlayer;
 import net.botwithus.rs3.game.scene.entities.object.SceneObject;
+import net.botwithus.rs3.game.skills.Skills;
 import net.botwithus.rs3.script.Execution;
 import net.botwithus.rs3.script.LoopingScript;
 import net.botwithus.rs3.script.config.ScriptConfig;
@@ -84,6 +85,13 @@ public class EverlightMinerScript extends LoopingScript {
     private static final int LOG_CAP = 300;
     private String lastStatusLog = "";
 
+    // Stop conditions (set from the Play tab; 0 = off) + why we auto-stopped.
+    public volatile int stopAtLevel = 0;
+    public volatile int stopAfterMinutes = 0;
+    public volatile String stopReason = "";
+    /** Consecutive rock clicks that never started the mining animation (pickaxe/level?). */
+    private int noAnimStreak = 0;
+
     public EverlightMinerScript(String name, ScriptConfig scriptConfig, ScriptDefinition definition) {
         super(name, scriptConfig, definition);
     }
@@ -105,6 +113,7 @@ public class EverlightMinerScript extends LoopingScript {
         }
         updateOreCount();
         logVerbose(player);
+        if (checkStopConditions()) { Execution.delay(600); return; }
         switch (botState) {
             case IDLE -> Execution.delay(600);
             case MINING -> handleMining(player);
@@ -148,12 +157,21 @@ public class EverlightMinerScript extends LoopingScript {
             return;
         }
         if (rock.interact(MINE_OPTION)) {
-            Execution.delayUntil(3000, () -> {
+            boolean started = Execution.delayUntil(3000, () -> {
                 LocalPlayer me = Client.getLocalPlayer();
                 return me != null && me.getAnimationId() != -1;
             });
+            if (started) {
+                noAnimStreak = 0;
+            } else if (++noAnimStreak == 5) {
+                log("[MINE] clicked a rock 5x but never started mining — check pickaxe / Mining level / access.");
+            } else if (noAnimStreak >= 15) {
+                autoStop("not mining after 15 tries (pickaxe / level?)");
+                return;
+            }
         }
         Execution.delay(randomLong(600, 1200));
+        maybeBreak();
     }
 
     // ── Banking route (surface): leave cave -> Skip over scaffold -> Bank chest ->
@@ -179,10 +197,10 @@ public class EverlightMinerScript extends LoopingScript {
                 }
             }
             case 2 -> {   // Load Last Preset from the Bank chest: deposits + reloads in one click
-                if (!Backpack.isFull()) { bankStep = 3; return; }   // pack cleared -> done banking
+                if (backpackOreCount() == 0) { bankStep = 3; return; }   // porcelain gone -> deposited
                 if (travelStep(BANK_NAME, BANK_PRESET_OPTION, BANK_X, BANK_Y, BANK_Z)) {
                     log("[BANK] load last preset");
-                    Execution.delayUntil(5000, () -> !Backpack.isFull());
+                    Execution.delayUntil(5000, () -> backpackOreCount() == 0);
                 }
             }
             case 3 -> {   // cross the scaffold back toward the cave (recovery entry point)
@@ -238,10 +256,8 @@ public class EverlightMinerScript extends LoopingScript {
                     fastTravelTries = 0;
                     bankStep = 3;                                // hand off to the surface return legs
                 } else if (++fastTravelTries >= 4) {
-                    log("[BANK] fast travel to Everlight failed after " + fastTravelTries + " tries — STOPPING.");
-                    botState = BotState.IDLE;
-                    bankStep = 0;
                     fastTravelTries = 0;
+                    autoStop("fast travel to Everlight failed");
                 } else {
                     bankStep = 11;                               // reopen the map and retry
                 }
@@ -289,12 +305,8 @@ public class EverlightMinerScript extends LoopingScript {
         }
         // no progress this attempt
         if (++navFailStreak >= MAX_NAV_FAILS) {
-            log("[NAV] stuck: can't reach " + x + "," + y + "," + z + " (dist " + after + ") after "
-                    + navFailStreak + " no-progress tries — STOPPING. Move the character to the rocks "
-                    + "and press Start (navPath can't cross regions/obstacles in this client).");
-            botState = BotState.IDLE;
-            bankStep = 0;
             navFailStreak = 0;
+            autoStop("nav stuck at " + x + "," + y + " — move the character to the rocks and Start");
         } else {
             log("[NAV] no progress to " + x + "," + y + "," + z + " (dist " + after + ") "
                     + navFailStreak + "/" + MAX_NAV_FAILS);
@@ -344,19 +356,64 @@ public class EverlightMinerScript extends LoopingScript {
 
     public void clearLog() { synchronized (logBuffer) { logBuffer.clear(); } }
 
-    /** Emit a concise status line whenever the meaningful state changes (verbose feed). */
+    /** Emit a status line only when the meaningful state changes (state/step/region),
+     *  so it doesn't spam a line per ore mined. free/mined are shown but don't trigger. */
     private void logVerbose(LocalPlayer player) {
+        String key = "state=" + botState + (botState == BotState.BANKING ? " step=" + bankStep : "")
+                + " region=" + regionOf();
+        if (key.equals(lastStatusLog)) return;
+        lastStatusLog = key;
         int free = -1;
         try { free = Backpack.countFreeSlots(); } catch (Throwable ignored) {}
-        String s = "state=" + botState + (botState == BotState.BANKING ? " step=" + bankStep : "")
-                + " region=" + regionOf() + " free=" + free + " mined=" + oreMined;
-        if (!s.equals(lastStatusLog)) {
-            lastStatusLog = s;
-            log("[STATUS] " + s);
+        log("[STATUS] " + key + " free=" + free + " mined=" + oreMined);
+    }
+
+    // ── Stop conditions / anti-ban ──────────────────────────────────────────────
+    /** Stop when a target Mining level or runtime is reached. Returns true if stopped. */
+    private boolean checkStopConditions() {
+        if (botState == BotState.IDLE) return false;
+        if (stopAtLevel > 0) {
+            int lvl = 0;
+            try { lvl = Skills.MINING.getSkill().getLevel(); } catch (Throwable ignored) {}
+            if (lvl >= stopAtLevel) { autoStop("reached Mining level " + lvl); return true; }
         }
+        if (stopAfterMinutes > 0
+                && (System.currentTimeMillis() - scriptStartTime) / 60000 >= stopAfterMinutes) {
+            autoStop("ran for " + stopAfterMinutes + " min");
+            return true;
+        }
+        return false;
+    }
+
+    /** Occasionally pause like a human — a short break most of the time, a rare longer
+     *  AFK. Only called from the mining loop, never mid-bank/nav. */
+    private void maybeBreak() {
+        int roll = random.nextInt(100);
+        if (roll < 3) {                                  // ~3%: longer AFK
+            long ms = randomLong(20_000, 60_000);
+            log("[BREAK] afk " + (ms / 1000) + "s");
+            Execution.delay(ms);
+        } else if (roll < 18) {                          // ~15%: short pause
+            Execution.delay(randomLong(2000, 6000));
+        }
+    }
+
+    /** Stop the bot and record why (surfaced on the Play tab + logged prominently). */
+    private void autoStop(String reason) {
+        stopReason = reason;
+        bankStep = 0;
+        botState = BotState.IDLE;
+        log("[STOP] " + reason);
+    }
+
+    private int backpackOreCount() {
+        try { return Backpack.getCount(ORE_NAME); } catch (Throwable t) { return 0; }
     }
 
     // ── GUI accessors ─────────────────────────────────────────────────────────
     public BotState getBotState() { return botState; }
-    public void setBotState(BotState s) { this.botState = s; }
+    public void setBotState(BotState s) {
+        if (s == BotState.MINING) { stopReason = ""; noAnimStreak = 0; }  // fresh Start
+        this.botState = s;
+    }
 }
