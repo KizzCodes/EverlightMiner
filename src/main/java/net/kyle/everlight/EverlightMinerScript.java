@@ -9,7 +9,6 @@ import net.botwithus.rs3.game.minimenu.MiniMenu;
 import net.botwithus.rs3.game.queries.builders.objects.SceneObjectQuery;
 import net.botwithus.rs3.game.scene.entities.characters.player.LocalPlayer;
 import net.botwithus.rs3.game.scene.entities.object.SceneObject;
-import net.botwithus.rs3.game.skills.Skills;
 import net.botwithus.rs3.script.Execution;
 import net.botwithus.rs3.script.LoopingScript;
 import net.botwithus.rs3.script.config.ScriptConfig;
@@ -53,23 +52,21 @@ public class EverlightMinerScript extends LoopingScript {
     private static final int CAVE_ENTER_X = 3741, CAVE_ENTER_Y = 3222, CAVE_ENTER_Z = 0;
 
     // Stranded-recovery teleport chain: Archaeology journal (item) -> Guild -> Dig
-    // sites map -> press the Everlight shortcut key. (Only used to get back to
-    // Everlight when the char is far away; normal banking uses the surface route.)
+    // sites map -> fast travel to Everlight. Only used when the character is away
+    // from the dig site; normal banking uses the surface route above.
     private static final String JOURNAL_NAME = "Archaeology journal", JOURNAL_TELE = "Teleport";
     private static final int GUILD_REGION_A = 13108, GUILD_REGION_B = 13364;
     private static final String MAP_NAME = "Dig sites map", MAP_OPTION = "View";
     private static final int MAP_X = 3327, MAP_Y = 3373;
-    // Dig sites map fast-travel clicks (captured by the user as DoAction(COMPONENT,...)):
+    // Dig sites map fast-travel component clicks (interface 667):
     private static final int EVERLIGHT_HASH  = 43712523; // [667,11] Everlight entry (p2=1)
     private static final int FASTTRAVEL_HASH = 43712535; // [667,23] Fast travel   (p2=-1)
 
     // ── Runtime state ─────────────────────────────────────────────────────────
     private volatile BotState botState = BotState.IDLE;
-    private final ScriptConfig scriptConfig;
     private final Random random = new Random();
 
     public final long scriptStartTime = System.currentTimeMillis();
-    public int startingXp = 0;
     public volatile int oreMined = 0;
     private int lastOreCount = 0;
 
@@ -80,7 +77,7 @@ public class EverlightMinerScript extends LoopingScript {
     private int navFailStreak = 0;
     private static final int MAX_NAV_FAILS = 5;
     /** Fast-travel attempts during recovery; stop after a few if it won't teleport. */
-    private int ePressTries = 0;
+    private int fastTravelTries = 0;
 
     /** In-client Logs tab: thread-safe ring buffer of recent log lines. */
     private final java.util.ArrayDeque<String> logBuffer = new java.util.ArrayDeque<>();
@@ -89,14 +86,12 @@ public class EverlightMinerScript extends LoopingScript {
 
     public EverlightMinerScript(String name, ScriptConfig scriptConfig, ScriptDefinition definition) {
         super(name, scriptConfig, definition);
-        this.scriptConfig = scriptConfig;
     }
 
     @Override
     public boolean initialize() {
         this.sgc = new EverlightMinerGraphicsContext(getConsole(), this);
         this.loopDelay = 300;
-        try { this.startingXp = Skills.MINING.getSkill().getExperience(); } catch (Throwable ignored) {}
         log("[INIT] Everlight Porcelain Miner initialized — press Start.");
         return super.initialize();
     }
@@ -163,7 +158,7 @@ public class EverlightMinerScript extends LoopingScript {
 
     // ── Banking route (surface): leave cave -> Skip over scaffold -> Bank chest ->
     //    deposit -> scaffold back -> cave entrance -> walk to rocks. The "lost"
-    //    recovery enters at step 4 (return legs only). ────────────────────────────
+    //    recovery enters at step 3 (return legs) or step 10 (teleport chain). ──────
     private void handleBanking(LocalPlayer player) {
         int region = (player.getCoordinate() != null) ? player.getCoordinate().getRegionId() : -1;
         boolean inCave = region == CAVE_REGION;
@@ -240,13 +235,13 @@ public class EverlightMinerScript extends LoopingScript {
                 MiniMenu.interact(14, 1, -1, FASTTRAVEL_HASH);   // [667,23] fast travel
                 boolean arrived = Execution.delayUntil(12000, () -> regionOf() == EVERLIGHT_BANK_REGION);
                 if (arrived) {
-                    ePressTries = 0;
+                    fastTravelTries = 0;
                     bankStep = 3;                                // hand off to the surface return legs
-                } else if (++ePressTries >= 4) {
-                    log("[BANK] fast travel to Everlight failed after " + ePressTries + " tries — STOPPING.");
+                } else if (++fastTravelTries >= 4) {
+                    log("[BANK] fast travel to Everlight failed after " + fastTravelTries + " tries — STOPPING.");
                     botState = BotState.IDLE;
                     bankStep = 0;
-                    ePressTries = 0;
+                    fastTravelTries = 0;
                 } else {
                     bankStep = 11;                               // reopen the map and retry
                 }
