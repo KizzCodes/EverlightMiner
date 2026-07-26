@@ -31,7 +31,8 @@ public class EverlightMinerScript extends LoopingScript {
     // ── Hardcoded targets (confirmed via in-game dumps) ────────────────────────
     private static final String ROCK_NAME   = "Porcelain clay rock";
     private static final String MINE_OPTION = "Mine";
-    private static final String ORE_NAME    = "Porcelain clay";   // for the mined counter
+    // The rock yields both of these; the counter + deposit check cover both.
+    private static final String[] ORE_NAMES = {"Porcelain clay", "Soft porcelain clay"};
 
     private static final int CAVE_REGION            = 9077;   // the rocks' cave
     private static final int EVERLIGHT_BANK_REGION  = 14642;  // surface, bank side
@@ -328,7 +329,7 @@ public class EverlightMinerScript extends LoopingScript {
     /** Track porcelain mined by watching the backpack count rise (resets on bank). */
     private void updateOreCount() {
         int cur;
-        try { cur = Backpack.getCount(ORE_NAME); } catch (Throwable t) { return; }
+        try { cur = Backpack.getCount(ORE_NAMES); } catch (Throwable t) { return; }
         if (cur > lastOreCount) oreMined += (cur - lastOreCount);
         lastOreCount = cur;
     }
@@ -407,7 +408,7 @@ public class EverlightMinerScript extends LoopingScript {
     }
 
     private int backpackOreCount() {
-        try { return Backpack.getCount(ORE_NAME); } catch (Throwable t) { return 0; }
+        try { return Backpack.getCount(ORE_NAMES); } catch (Throwable t) { return 0; }
     }
 
     // ── GUI accessors ─────────────────────────────────────────────────────────
