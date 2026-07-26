@@ -1,0 +1,17 @@
+# Build output
+build/
+.gradle/
+
+# API jars are pulled from the BotWithUs nexus by Gradle (see build.gradle.kts).
+# build.ps1 uses local copies here, but they are not committed.
+libs/
+
+# Screenshots / discovery dumps (dev only)
+*.png
+everlight-*.txt
+
+# IDE
+.idea/
+*.iml
+*.iws
+.vscode/
